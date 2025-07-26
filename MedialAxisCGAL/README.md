@@ -33,14 +33,22 @@ vcpkg.exe install cgal
 ## Configuring The Project
 
 ```cmd
-cd <DIR_WITH_MEDIAL_AXIS_CPP_FILE>
+cd <SRC_DIR_LOCATION>
 mkdir build
 cd build
 cmake-gui ..
 ```
 
-- Specify the source code path (`<DIR_WITH_MEDIAL_AXIS_CPP_FILE>`).
+- Click `Configure`.
+- Specify the source code path (`<SRC_DIR_LOCATION>`).
+- Specify the build directory path.
 - Specify `Visual Studio 17 2022` as the `Generator`.
 - Specify `x64` as the `Optional Platform`.
 - Select `Specify toolchain file for cross compilation` and choose the `vcpkg.cmake` file, located in `<VCPKG_INSTALL_PATH>/scripts/buildsystems/vcpkg.cmake`
+- Tick `Advanced` and `Grouped`.
+- Click `Generate`.
 
+## Starting the Project
+
+You should now have the file `MedialAxis\MedialAxisCGAL\build\MedialAxis.sln`,
+which you should be able to run/compile.
