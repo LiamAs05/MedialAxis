@@ -50,5 +50,4 @@ cmake-gui ..
 
 ## Starting the Project
 
-You should now have the file `MedialAxis\MedialAxisCGAL\build\MedialAxis.sln`,
-which you should be able to run/compile.
+You should now be able to open `MedialAxis\MedialAxisCGAL\build\MedialAxis.sln` in Visual Studio.
