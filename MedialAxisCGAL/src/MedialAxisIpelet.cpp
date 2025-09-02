@@ -1,82 +1,106 @@
-#include "MedialAxis.hpp"
+// --------------------------------------------------------------------
+// Ipelet for computing the Medial Axis of a convex polygon
+// --------------------------------------------------------------------
 
-//namespace medial_axis_ipelet
-//{
-//    const std::string labels[] = { "Medial Axis", "Help" };
-//
-//    const std::string hmsg[] = {
-//          "Compute the Medial Axis transformation of a simple convex polygon."
-//    };
-//
-//    class MedialAxisIpelet : public CGAL::Ipelet_base<K, 2>
-//    {
-//    public:
-//        MedialAxisIpelet() : Ipelet_base("Medial Axis", labels, hmsg) {}
-//        void protected_run(int) override;
-//    };
-//
-//    void MedialAxisIpelet::protected_run(int fn)
-//    {
-//        switch (fn) {
-//        case 1:
-//            show_help();//print an help message
-//            return;
-//        default:
-//            std::list<Point_2> pt_lst;
-//
-//            // Recovering points using output iterator of typ Dispatch_or_drop_output_iterator
-//            read_active_objects(
-//                CGAL::dispatch_or_drop_output<Point_2>(std::back_inserter(pt_lst))
-//            );
-//
-//            if (pt_lst.empty()) {
-//                print_error_message("No mark selected");
-//                return;
-//            }
-//
-//            const Polygon_2 pgn = Polygon_2(pt_lst.begin(), pt_lst.end());
-//            MedialAxis m(pgn);
-//
-//            for (const auto& seg : m.get())
-//            {
-//                draw_in_ipe(seg);
-//            }
-//        };
-//    }
-//
-//}
+#include "ipelib.h"
+#include "MedialAxis.hpp"   // your C++ medial axis implementation
+#include <vector>
+#include <stdexcept>
 
-Polygon_2 polygon_from_wkt()
+using namespace ipe;
+
+// --------------------------------------------------------------------
+
+class MedialAxisIpelet : public Ipelet {
+public:
+  MedialAxisIpelet();
+  virtual int ipelibVersion() const { return IPELIB_VERSION; }
+  virtual bool run(int function, IpeletData *data, IpeletHelper *helper);
+};
+
+MedialAxisIpelet::MedialAxisIpelet()
 {
-    const std::string coordinates_file_path = R"(C:\Users\liamd\Desktop\ipe-7.2.29\bin\coordinates.txt)";
-    std::ifstream wkt_file(coordinates_file_path);
-
-    if (!wkt_file) {
-        throw std::runtime_error("Could not open WKT file: " + coordinates_file_path);
-    }
-
-    Polygon_2 poly;
-    if (!read_polygon_WKT(wkt_file, poly)) {
-        throw std::runtime_error("Failed to parse WKT polygon.");
-    }
-
-    return poly;
+  // nothing needed
 }
 
-int main() { 
-	try { 
-		const Polygon_2 pgn = polygon_from_wkt();
-		MedialAxis m(pgn);
-		const auto segments = m.get();
-		std::cout << "Medial Axis Edges: " << segments.size() << std::endl;
-        for (const auto& seg : segments)
-        {
-            std::cout << seg.point(0) << " -> " << seg.point(1) << std::endl;
-        }
-    } catch (const std::exception& ex)
-    {
-        std::cerr << "Error: " << ex.what() << std::endl;
-        return 1;
+bool MedialAxisIpelet::run(int function, IpeletData *data, IpeletHelper *helper)
+{
+  Page *page = data->iPage;
+  if (!page) {
+    helper->messageBox("No page open", nullptr, 0);
+    return false;
+  }
+
+  // Collect a selected polygon path
+  Path *polyPath = nullptr;
+  for (int i = 0; i < page->count(); ++i) {
+    if (page->select(i)) {
+      Object *obj = page->object(i);
+      if (obj->type() == Object::EPath) {
+        polyPath = obj->asPath();
+        break;
+      }
     }
-    return 0;
+  }
+
+  if (!polyPath) {
+    helper->messageBox("Please select a polygon path", nullptr, 0);
+    return false;
+  }
+
+  Shape shape = polyPath->shape();
+  if (shape.countSubPaths() == 0 || !shape.subPath(0)->closed()) {
+    helper->messageBox("Selected path is not a closed polygon", nullptr, 0);
+    return false;
+  }
+
+  // Extract polygon vertices
+  std::vector<Point> vertices;
+  const SubPath *sp = shape.subPath(0);
+  const Curve *curve = sp->asCurve();
+  if (!curve) {
+    helper->messageBox("Unsupported path type", nullptr, 0);
+    return false;
+  }
+  for (int j = 0; j < curve->countSegments(); ++j) {
+    Vector p = curve->segment(j).cp(0);
+    vertices.emplace_back(p.x, p.y);
+  }
+  Vector last = curve->segment(curve->countSegments() - 1).last();
+  vertices.emplace_back(last.x, last.y);
+
+  if (vertices.size() < 3) {
+    helper->messageBox("Polygon must have at least 3 vertices", nullptr, 0);
+    return false;
+  }
+
+  try {
+    Polygon_2 poly(vertices.begin(), vertices.end());
+    MedialAxis m(poly);
+    auto segs = m.get();
+
+    // Build group of medial axis segments
+    Group *group = new Group;
+    for (const auto &s : segs) {
+      Vector a(s.source().x(), s.source().y());
+      Vector b(s.target().x(), s.target().y());
+      group->push_back(new Path(data->iAttributes, Shape(Segment(a, b))));
+    }
+
+    page->append(ESecondarySelected, data->iLayer, group);
+  }
+  catch (const std::exception &e) {
+    helper->messageBox(e.what(), nullptr, 0);
+    return false;
+  }
+
+  return true;
 }
+
+// --------------------------------------------------------------------
+
+IPELET_DECLARE Ipelet *newIpelet()
+{
+  return new MedialAxisIpelet;
+}
+

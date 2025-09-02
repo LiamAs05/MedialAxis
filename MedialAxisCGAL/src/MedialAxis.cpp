@@ -1,20 +1,20 @@
 #include "MedialAxis.hpp"
 
-static std::optional<Segment> clipSegmentToPolygon(const Segment& seg, const Polygon_2& poly) {
+static std::optional<CgalSegment> clipCgalSegmentToPolygon(const CgalSegment& seg, const Polygon_2& poly) {
     // Collect intersection points with polygon edges
     std::vector<Point> intersections;
 
     // Iterate over polygon edges
     for (auto eit = poly.edges_begin(); eit != poly.edges_end(); ++eit) {
-        const Segment& edge = *eit;
+        const CgalSegment& edge = *eit;
 
         CGAL::Object result = CGAL::intersection(seg, edge);
 
         if (const Point* ipoint = CGAL::object_cast<Point>(&result)) {
             intersections.push_back(*ipoint);
         }
-        else if (const Segment* iseg = CGAL::object_cast<Segment>(&result)) {
-            // The segment lies on the polygon edge: keep endpoints
+        else if (const CgalSegment* iseg = CGAL::object_cast<CgalSegment>(&result)) {
+            // The CgalSegment lies on the polygon edge: keep endpoints
             intersections.push_back(iseg->source());
             intersections.push_back(iseg->target());
         }
@@ -35,13 +35,13 @@ static std::optional<Segment> clipSegmentToPolygon(const Segment& seg, const Pol
         return std::nullopt;
     }
 
-    // Pick the two extreme points along the original segment
+    // Pick the two extreme points along the original CgalSegment
     auto cmp = [&seg](const Point& a, const Point& b) {
         return CGAL::squared_distance(seg.source(), a) < CGAL::squared_distance(seg.source(), b);
         };
     auto [pmin, pmax] = std::minmax_element(intersections.begin(), intersections.end(), cmp);
 
-    return Segment(*pmin, *pmax);
+    return CgalSegment(*pmin, *pmax);
 }
 
 static void removePointIfExists(std::vector<Point>& vertices, const Point& toRemove)
@@ -53,11 +53,11 @@ static void removePointIfExists(std::vector<Point>& vertices, const Point& toRem
     }
 }
 
-/// Computes the intersection point of two lines
-/// @param l1 first line
-/// @param l2 second line
+/// Computes the intersection point of two CgalLines
+/// @param l1 first CgalLine
+/// @param l2 second CgalLine
 /// @return an intersection point, if such exists; otherwise `std::nullopt`
-static std::optional<Point> getIntersectionPoint(const Line& l1, const Line& l2) {
+static std::optional<Point> getIntersectionPoint(const CgalLine& l1, const CgalLine& l2) {
     const CGAL::Object obj = intersection(l1, l2);
     if (const Point* p = CGAL::object_cast<Point>(&obj)) {
         return *p;
@@ -69,8 +69,8 @@ static std::optional<Point> getIntersectionPoint(const Line& l1, const Line& l2)
 /// @param prev first vertex
 /// @param curr middle vertex
 /// @param next end vertex
-/// @return a Line object representing the angle bisector of the angle between said edges
-static Line get_angle_bisector(const Point& prev, const Point& curr, const Point& next) {
+/// @return a CgalLine object representing the angle bisector of the angle between said edges
+static CgalLine get_angle_bisector(const Point& prev, const Point& curr, const Point& next) {
     // Construct vectors from current point to neighbors
     K::Vector_2 u1 = prev - curr;
     K::Vector_2 u2 = next - curr;
@@ -107,11 +107,11 @@ MedialAxis::MedialAxis(const Polygon_2& pgn)
     }
 
     while (vertices.size() > TRIANGLE_VERTICES) {
-        LinePair meeting_edges;
+        CgalLinePair meeting_edges;
         Point center;
 
-        auto next_meeting_bisectors = findNextSegmentPair(vertices, meeting_edges, center);
-        addMedialAxisSegments(next_meeting_bisectors);
+        auto next_meeting_bisectors = findNextCgalSegmentPair(vertices, meeting_edges, center);
+        addMedialAxisCgalSegments(next_meeting_bisectors);
         updateVertices(vertices, next_meeting_bisectors, meeting_edges);
     }
 
@@ -120,9 +120,9 @@ MedialAxis::MedialAxis(const Polygon_2& pgn)
     clipToPolygon(pgn);
 }
 
-SegmentPair MedialAxis::findNextSegmentPair(const std::vector<Point>& vertices, LinePair& meeting_edges, Point& center) const
+CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& vertices, CgalLinePair& meeting_edges, Point& center) const
 {
-    std::pair<Segment, Segment> earliest_meeting_pair;
+    std::pair<CgalSegment, CgalSegment> earliest_meeting_pair;
     double min_radius = std::numeric_limits<double>::max();
     std::size_t n = vertices.size();
 
@@ -132,8 +132,8 @@ SegmentPair MedialAxis::findNextSegmentPair(const std::vector<Point>& vertices, 
         const std::uint64_t i2 = (i + 1) % n;
         const std::uint64_t i3 = (i + 2) % n;
 
-        Line bisector1 = get_angle_bisector(vertices[i0], vertices[i1], vertices[i2]);
-        Line bisector2 = get_angle_bisector(vertices[i1], vertices[i2], vertices[i3]);
+        CgalLine bisector1 = get_angle_bisector(vertices[i0], vertices[i1], vertices[i2]);
+        CgalLine bisector2 = get_angle_bisector(vertices[i1], vertices[i2], vertices[i3]);
 
         auto inter = getIntersectionPoint(bisector1, bisector2);
         if (!inter)
@@ -144,7 +144,7 @@ SegmentPair MedialAxis::findNextSegmentPair(const std::vector<Point>& vertices, 
         const double r = std::sqrt(CGAL::squared_distance(*inter, vertices[i1]));
         if (r < min_radius) {
             min_radius = r;
-            meeting_edges = { Line(vertices[i0], vertices[i1]), Line(vertices[i2], vertices[i3]) };
+            meeting_edges = { CgalLine(vertices[i0], vertices[i1]), CgalLine(vertices[i2], vertices[i3]) };
             center = *inter;
             earliest_meeting_pair = { {vertices[i1], center}, {vertices[i2], center} };
         }
@@ -153,13 +153,13 @@ SegmentPair MedialAxis::findNextSegmentPair(const std::vector<Point>& vertices, 
     return earliest_meeting_pair;
 }
 
-void MedialAxis::addMedialAxisSegments(const SegmentPair& earliest_meeting_pair)
+void MedialAxis::addMedialAxisCgalSegments(const CgalSegmentPair& earliest_meeting_pair)
 {
-    m_medialAxisSegments.emplace_back(earliest_meeting_pair.first);
-    m_medialAxisSegments.emplace_back(earliest_meeting_pair.second);
+    m_medialAxisCgalSegments.emplace_back(earliest_meeting_pair.first);
+    m_medialAxisCgalSegments.emplace_back(earliest_meeting_pair.second);
 }
 
-void MedialAxis::updateVertices(std::vector<Point>& vertices, const SegmentPair& earliest_meeting_pair, const LinePair& meeting_edges) const
+void MedialAxis::updateVertices(std::vector<Point>& vertices, const CgalSegmentPair& earliest_meeting_pair, const CgalLinePair& meeting_edges) const
 {
     auto point = getIntersectionPoint(meeting_edges.first, meeting_edges.second);
     if (point.has_value())
@@ -178,23 +178,23 @@ void MedialAxis::triangleMedialAxis(const std::vector<Point>& vertices)
 {
     const Point A = vertices[0], B = vertices[1], C = vertices[2];
     Point center = CGAL::centroid(A, B, C);
-    m_medialAxisSegments.emplace_back(A, center);
-    m_medialAxisSegments.emplace_back(B, center);
-    m_medialAxisSegments.emplace_back(C, center);
+    m_medialAxisCgalSegments.emplace_back(A, center);
+    m_medialAxisCgalSegments.emplace_back(B, center);
+    m_medialAxisCgalSegments.emplace_back(C, center);
 }
 
 void MedialAxis::clipToPolygon(const Polygon_2& poly) {
-    std::list<Segment> clipped;
-    for (const auto& seg : m_medialAxisSegments) {
-        auto clippedSeg = clipSegmentToPolygon(seg, poly);
+    std::list<CgalSegment> clipped;
+    for (const auto& seg : m_medialAxisCgalSegments) {
+        auto clippedSeg = clipCgalSegmentToPolygon(seg, poly);
         if (clippedSeg) {
             clipped.push_back(*clippedSeg);
         }
     }
-    m_medialAxisSegments = clipped;
+    m_medialAxisCgalSegments = clipped;
 }
 
-std::list<Segment> MedialAxis::get() const
+std::list<CgalSegment> MedialAxis::get() const
 {
-    return m_medialAxisSegments;
+    return m_medialAxisCgalSegments;
 }
