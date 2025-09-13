@@ -42,15 +42,13 @@ endif()
 
 # ---- Ipelet plugin ----
 if(BUILD_IPELET)
-  add_library(medialaxis_ipelet SHARED
+  add_library(medialaxis SHARED
     MedialAxisIpelet.cpp
     ${CORE_SRCS}
   )
-  target_link_libraries(medialaxis_ipelet PRIVATE CGAL::CGAL libipe.so)
+  target_link_libraries(medialaxis PRIVATE CGAL::CGAL libipe.so)
 
-  # put the plugin in a "lib" folder
-  set_target_properties(medialaxis_ipelet PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+  set_target_properties(medialaxis PROPERTIES
     PREFIX "" # removes "lib" prefix, so it builds medialaxis_ipelet.so not libmedialaxis_ipelet.so
   )
 endif()

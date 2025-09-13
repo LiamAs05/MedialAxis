@@ -151,16 +151,33 @@ CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& ve
         CgalLine bisector2 = get_angle_bisector(vertices[i1], vertices[i2], vertices[i3]);
 
         auto inter = getIntersectionPoint(bisector1, bisector2);
-        if (!inter)
+        if (!inter.has_value())
         {
             continue;
         }
 
-        const double r = std::sqrt(CGAL::squared_distance(*inter, vertices[i1]));
+        CgalLine L1(vertices[i0], vertices[i1]);
+        CgalLine L2(vertices[i1], vertices[i2]);
+        CgalLine L3(vertices[i2], vertices[i3]);
+
+        const double d1 = std::sqrt(CGAL::to_double(CGAL::squared_distance(inter.value(), L1)));
+        const double d2 = std::sqrt(CGAL::to_double(CGAL::squared_distance(inter.value(), L2)));
+        const double d3 = std::sqrt(CGAL::to_double(CGAL::squared_distance(inter.value(), L3)));
+
+        std::cerr << "i="<<i1<<" m=("<<CGAL::to_double(inter.value().x())<<","<<CGAL::to_double(inter.value().y())
+                  <<")  d1="<<d1<<" d2="<<d2<<" d3="<<d3<<"\n";
+
+        if (std::abs(d1 - d2) > 10e-6 || std::abs(d2 - d3) > 10e-6)
+        {
+            throw std::logic_error("Computation error: Incorrect results in computing radius of circle");
+        }
+
+        // Radius of circle centered at intersection point and tangent to L1, L2, L3
+        const double r = (d1 + d2 + d3) / 3.0;
         if (r < min_radius) {
             min_radius = r;
-            meeting_edges = { CgalLine(vertices[i0], vertices[i1]), CgalLine(vertices[i2], vertices[i3]) };
-            center = *inter;
+            meeting_edges = { L1, L3 };
+            center = inter.value();
             earliest_meeting_pair = { {vertices[i1], center}, {vertices[i2], center} };
         }
     }
