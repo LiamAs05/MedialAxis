@@ -4,107 +4,7 @@
 #include <vector>
 #include <iterator>
 
-// tolerance for point comparisons (tweak if needed)
-static constexpr double CLIP_EPS = 1e-9;
-
-// Compare two points with a small coordinate tolerance
-static bool points_equal_eps(const Point& a, const Point& b, double eps = CLIP_EPS) {
-    return (std::abs(CGAL::to_double(a.x()) - CGAL::to_double(b.x())) <= eps) &&
-           (std::abs(CGAL::to_double(a.y()) - CGAL::to_double(b.y())) <= eps);
-}
-
-
-static std::optional<CgalSegment> clipCgalSegmentToPolygon(const CgalSegment& seg, const Polygon_2& poly) {
-    // Collect intersection points with polygon edges
-    std::vector<Point> intersections;
-
-    // Iterate over polygon edges
-    for (auto eit = poly.edges_begin(); eit != poly.edges_end(); ++eit) {
-        const CgalSegment& edge = *eit;
-
-        CGAL::Object result = CGAL::intersection(seg, edge);
-
-        if (const Point* ipoint = CGAL::object_cast<Point>(&result)) {
-            intersections.push_back(*ipoint);
-        }
-        else if (const CgalSegment* iseg = CGAL::object_cast<CgalSegment>(&result)) {
-            // The CgalSegment lies on the polygon edge: keep endpoints
-            intersections.push_back(iseg->source());
-            intersections.push_back(iseg->target());
-        }
-    }
-
-    // Also include the endpoints that are inside the polygon
-    if (poly.bounded_side(seg.source()) == CGAL::ON_BOUNDED_SIDE ||
-        poly.bounded_side(seg.source()) == CGAL::ON_BOUNDARY) {
-        intersections.push_back(seg.source());
-    }
-    if (poly.bounded_side(seg.target()) == CGAL::ON_BOUNDED_SIDE ||
-        poly.bounded_side(seg.target()) == CGAL::ON_BOUNDARY) {
-        intersections.push_back(seg.target());
-    }
-
-    // If we found less than 2 points, nothing to keep
-    if (intersections.size() < 2) {
-        return std::nullopt;
-    }
-
-    // Pick the two extreme points along the original CgalSegment
-    auto cmp = [&seg](const Point& a, const Point& b) {
-        return CGAL::squared_distance(seg.source(), a) < CGAL::squared_distance(seg.source(), b);
-        };
-    auto [pmin, pmax] = std::minmax_element(intersections.begin(), intersections.end(), cmp);
-
-    return CgalSegment(*pmin, *pmax);
-}
-
-static void removePointIfExists(std::vector<Point>& vertices, const Point& toRemove)
-{
-    auto it = std::find(vertices.begin(), vertices.end(), toRemove);
-    if (it != vertices.end())
-    {
-        vertices.erase(it);
-    }
-}
-
-/// Computes the intersection point of two CgalLines
-/// @param l1 first CgalLine
-/// @param l2 second CgalLine
-/// @return an intersection point, if such exists; otherwise `std::nullopt`
-static std::optional<Point> getIntersectionPoint(const CgalLine& l1, const CgalLine& l2) {
-    const CGAL::Object obj = intersection(l1, l2);
-    if (const Point* p = CGAL::object_cast<Point>(&obj)) {
-        return *p;
-    }
-    return std::nullopt;
-}
-
-/// Computes the angle bisector of edges (prev, curr) and (curr, next)
-/// @param prev first vertex
-/// @param curr middle vertex
-/// @param next end vertex
-/// @return a CgalLine object representing the angle bisector of the angle between said edges
-static CgalLine get_angle_bisector(const Point& prev, const Point& curr, const Point& next) {
-    // Construct vectors from current point to neighbors
-    K::Vector_2 u1 = prev - curr;
-    K::Vector_2 u2 = next - curr;
-
-    if (u1.squared_length() == 0 || u2.squared_length() == 0) {
-        throw std::runtime_error("Degenerate edge when computing angle bisector");
-    }
-
-    // Normalize
-    u1 = u1 / std::sqrt(u1.squared_length());
-    u2 = u2 / std::sqrt(u2.squared_length());
-
-    // Bisector direction
-    K::Vector_2 bisector = u1 + u2;
-    if (bisector.squared_length() == 0) {
-        bisector = u2;
-    }
-
-    return { curr, curr + bisector };
-}
+constexpr std::size_t TRIANGLE_VERTICES = 3;
 
 MedialAxis::MedialAxis(const Polygon_2& pgn) : m_originalPolygon(pgn), m_clipper(pgn) 
 {
@@ -113,7 +13,6 @@ MedialAxis::MedialAxis(const Polygon_2& pgn) : m_originalPolygon(pgn), m_clipper
     }
 
     std::vector vertices(pgn.vertices_begin(), pgn.vertices_end());
-    constexpr std::size_t TRIANGLE_VERTICES = 3;
 
     if (vertices.size() < TRIANGLE_VERTICES)
     {
@@ -128,10 +27,7 @@ MedialAxis::MedialAxis(const Polygon_2& pgn) : m_originalPolygon(pgn), m_clipper
         addMedialAxisCgalSegments(next_meeting_bisectors);
         updateVertices(vertices, next_meeting_bisectors, meeting_edges);
     }
-    for (auto& vertex : vertices)
-    {
-        std::cout << vertex << std::endl;  
-    }
+
     triangleMedialAxis(vertices);
 }
 
@@ -147,8 +43,8 @@ CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& ve
         const std::uint64_t i2 = (i + 1) % n;
         const std::uint64_t i3 = (i + 2) % n;
 
-        CgalLine bisector1 = get_angle_bisector(vertices[i0], vertices[i1], vertices[i2]);
-        CgalLine bisector2 = get_angle_bisector(vertices[i1], vertices[i2], vertices[i3]);
+        CgalLine bisector1 = computeAngleBisector(vertices[i0], vertices[i1], vertices[i2]);
+        CgalLine bisector2 = computeAngleBisector(vertices[i1], vertices[i2], vertices[i3]);
 
         auto inter = getIntersectionPoint(bisector1, bisector2);
         if (!inter.has_value())
@@ -164,10 +60,7 @@ CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& ve
         const double d2 = std::sqrt(CGAL::to_double(CGAL::squared_distance(inter.value(), L2)));
         const double d3 = std::sqrt(CGAL::to_double(CGAL::squared_distance(inter.value(), L3)));
 
-        std::cerr << "i="<<i1<<" m=("<<CGAL::to_double(inter.value().x())<<","<<CGAL::to_double(inter.value().y())
-                  <<")  d1="<<d1<<" d2="<<d2<<" d3="<<d3<<"\n";
-
-        if (std::abs(d1 - d2) > 10e-6 || std::abs(d2 - d3) > 10e-6)
+        if (std::abs(d1 - d2) > CLIP_EPS || std::abs(d2 - d3) > CLIP_EPS)
         {
             throw std::logic_error("Computation error: Incorrect results in computing radius of circle");
         }
@@ -196,20 +89,21 @@ void MedialAxis::addMedialAxisCgalSegments(const CgalSegmentPair& earliest_meeti
         m_medialAxisSegments.emplace_back(seg2.value());
 }
 
-void MedialAxis::update_clipper_incremental(const Point& src1, const Point& src2, const Point& target)
+void MedialAxis::updateClipperPolygon(const Point& src1, const Point& src2, const Point& target)
 {
     // Extract vertices of current clipping polygon
     std::vector<Point> pts(m_clipper.vertices_begin(), m_clipper.vertices_end());
     const std::size_t n = pts.size();
-    if (n < 3) {
+
+    if (n < TRIANGLE_VERTICES) {
         return;
     }
 
     // find indices of the two source vertices with tolerance
     int idx1 = -1, idx2 = -1;
     for (std::size_t i = 0; i < n; ++i) {
-        if (idx1 < 0 && points_equal_eps(pts[i], src1)) idx1 = static_cast<int>(i);
-        if (idx2 < 0 && points_equal_eps(pts[i], src2)) idx2 = static_cast<int>(i);
+        if (idx1 < 0 && pointsEqualEps(pts[i], src1)) idx1 = static_cast<int>(i);
+        if (idx2 < 0 && pointsEqualEps(pts[i], src2)) idx2 = static_cast<int>(i);
         if (idx1 >= 0 && idx2 >= 0) break;
     }
 
@@ -266,6 +160,8 @@ void MedialAxis::update_clipper_incremental(const Point& src1, const Point& src2
         if (hull.size() >= 3) m_clipper = Polygon_2(hull.begin(), hull.end());
         else m_clipper = Polygon_2();
     }
+
+    CGAL::write_polygon_WKT(std::cout, m_clipper);
 }
 
 void MedialAxis::updateVertices(std::vector<Point>& vertices,
@@ -299,41 +195,23 @@ void MedialAxis::updateVertices(std::vector<Point>& vertices,
     vertices.erase(it2);
 
     // after you compute newVertex and update `vertices` (your existing code)
-    update_clipper_incremental(earliest_meeting_pair.first.source(),
+    updateClipperPolygon(earliest_meeting_pair.first.source(),
                            earliest_meeting_pair.second.source(),
                            earliest_meeting_pair.first.target());
 }
 
 
-static Point compute_incenter(const Point& A, const Point& B, const Point& C)
-{
-    double a = std::sqrt(CGAL::squared_distance(B, C)); // length opposite A
-    double b = std::sqrt(CGAL::squared_distance(C, A)); // length opposite B
-    double c = std::sqrt(CGAL::squared_distance(A, B)); // length opposite C
-
-    double px = a * A.x() + b * B.x() + c * C.x();
-    double py = a * A.y() + b * B.y() + c * C.y();
-    double denom = a + b + c;
-
-    return Point(px / denom, py / denom);
-}
-
 void MedialAxis::triangleMedialAxis(const std::vector<Point>& vertices)
 {
     const Point A = vertices[0], B = vertices[1], C = vertices[2];
-    Point center = compute_incenter(A, B, C); // use incenter instead of centroid
+    Point center = computeTriangleIncenter(A, B, C); // use incenter instead of centroid
 
-    CGAL::write_polygon_WKT(std::cout, m_clipper);
-    auto a = clipCgalSegmentToPolygon({A, center}, m_clipper);
-    auto b = clipCgalSegmentToPolygon({B, center}, m_clipper);
-    auto c = clipCgalSegmentToPolygon({C, center}, m_clipper);
-    
-    if (a.has_value())
-        m_medialAxisSegments.push_back(a.value());
-    if (b.has_value())
-        m_medialAxisSegments.push_back(b.value());
-    if (c.has_value())
-        m_medialAxisSegments.push_back(c.value());
+    for (const auto& point : vertices)
+    {
+        auto clippedSegment = clipCgalSegmentToPolygon({point, center}, m_clipper);
+        if (clippedSegment.has_value())
+            m_medialAxisSegments.push_back(clippedSegment.value());
+    }
 }
 
 void MedialAxis::clipToPolygon(const Polygon_2& poly) {

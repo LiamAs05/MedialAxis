@@ -29,12 +29,14 @@ endif()
 set(CORE_SRCS
   MedialAxis.cpp
   MedialAxis.hpp
+  GeometryUtils.cpp
+  GeometryUtils.hpp
 )
 
 # ---- CLI executable ----
 if(BUILD_CLI)
   add_executable(medial_axis_cli
-    cli_main.cpp
+    CliTester.cpp
     ${CORE_SRCS}
   )
   target_link_libraries(medial_axis_cli PRIVATE CGAL::CGAL)
