@@ -14,7 +14,3 @@ function run(model, num)
   model:runIpelet(methods[num].label, ipelet, num)
 end
 
-methods = {
-  { label = "Compute Medial Axis" },
-}
-

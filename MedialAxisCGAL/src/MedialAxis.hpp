@@ -32,11 +32,17 @@ private:
 
     void addMedialAxisCgalSegments(const CgalSegmentPair& earliest_meeting_pair);
 
-    void updateVertices(std::vector<Point>& vertices, const CgalSegmentPair& earliest_meeting_pair, const CgalLinePair& meeting_edges) const;
+    void update_clipper_incremental(const Point& src1, const Point& src2, const Point& target);
+
+    void updateVertices(std::vector<Point>& vertices, const CgalSegmentPair& earliest_meeting_pair, const CgalLinePair& meeting_edges);
 
     void triangleMedialAxis(const std::vector<Point>& vertices);
 
     void clipToPolygon(const Polygon_2& poly);
 
-    std::list<CgalSegment> m_medialAxisCgalSegments;
+    void recompute_clipping_polygon(const CgalSegmentPair& meetingPair);
+
+    std::list<CgalSegment> m_medialAxisSegments;
+    Polygon_2 m_clipper;
+    Polygon_2 m_originalPolygon;
 };

@@ -1,5 +1,19 @@
 #include "MedialAxis.hpp"
 
+#include <CGAL/convex_hull_2.h>
+#include <vector>
+#include <iterator>
+
+// tolerance for point comparisons (tweak if needed)
+static constexpr double CLIP_EPS = 1e-9;
+
+// Compare two points with a small coordinate tolerance
+static bool points_equal_eps(const Point& a, const Point& b, double eps = CLIP_EPS) {
+    return (std::abs(CGAL::to_double(a.x()) - CGAL::to_double(b.x())) <= eps) &&
+           (std::abs(CGAL::to_double(a.y()) - CGAL::to_double(b.y())) <= eps);
+}
+
+
 static std::optional<CgalSegment> clipCgalSegmentToPolygon(const CgalSegment& seg, const Polygon_2& poly) {
     // Collect intersection points with polygon edges
     std::vector<Point> intersections;
@@ -92,7 +106,7 @@ static CgalLine get_angle_bisector(const Point& prev, const Point& curr, const P
     return { curr, curr + bisector };
 }
 
-MedialAxis::MedialAxis(const Polygon_2& pgn)
+MedialAxis::MedialAxis(const Polygon_2& pgn) : m_originalPolygon(pgn), m_clipper(pgn) 
 {
     if (!pgn.is_convex() || !pgn.is_simple()) {
         throw std::runtime_error("This algorithm only supports simple convex polygons.");
@@ -114,10 +128,11 @@ MedialAxis::MedialAxis(const Polygon_2& pgn)
         addMedialAxisCgalSegments(next_meeting_bisectors);
         updateVertices(vertices, next_meeting_bisectors, meeting_edges);
     }
-
-    // Final triangle case
+    for (auto& vertex : vertices)
+    {
+        std::cout << vertex << std::endl;  
+    }
     triangleMedialAxis(vertices);
-    clipToPolygon(pgn);
 }
 
 CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& vertices, CgalLinePair& meeting_edges, Point& center) const
@@ -155,46 +170,167 @@ CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& ve
 
 void MedialAxis::addMedialAxisCgalSegments(const CgalSegmentPair& earliest_meeting_pair)
 {
-    m_medialAxisCgalSegments.emplace_back(earliest_meeting_pair.first);
-    m_medialAxisCgalSegments.emplace_back(earliest_meeting_pair.second);
+    auto seg1 = clipCgalSegmentToPolygon(earliest_meeting_pair.first, m_clipper);
+    auto seg2 = clipCgalSegmentToPolygon(earliest_meeting_pair.second, m_clipper);
+
+    if (seg1.has_value())
+        m_medialAxisSegments.emplace_back(seg1.value());
+    if (seg2.has_value())
+        m_medialAxisSegments.emplace_back(seg2.value());
 }
 
-void MedialAxis::updateVertices(std::vector<Point>& vertices, const CgalSegmentPair& earliest_meeting_pair, const CgalLinePair& meeting_edges) const
+void MedialAxis::update_clipper_incremental(const Point& src1, const Point& src2, const Point& target)
 {
-    auto point = getIntersectionPoint(meeting_edges.first, meeting_edges.second);
-    if (point.has_value())
-    {
-        vertices.push_back(point.value());
+    // Extract vertices of current clipping polygon
+    std::vector<Point> pts(m_clipper.vertices_begin(), m_clipper.vertices_end());
+    const std::size_t n = pts.size();
+    if (n < 3) {
+        return;
     }
-    else
-    {
-        throw std::runtime_error("No valid edge intersection found; The supplied polygon probably fits a degenerate case.");
+
+    // find indices of the two source vertices with tolerance
+    int idx1 = -1, idx2 = -1;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (idx1 < 0 && points_equal_eps(pts[i], src1)) idx1 = static_cast<int>(i);
+        if (idx2 < 0 && points_equal_eps(pts[i], src2)) idx2 = static_cast<int>(i);
+        if (idx1 >= 0 && idx2 >= 0) break;
     }
-    removePointIfExists(vertices, earliest_meeting_pair.first.point(0));
-    removePointIfExists(vertices, earliest_meeting_pair.second.point(0));
+
+    if (idx1 < 0 || idx2 < 0) {
+        // Couldn't find one or both sources in m_clipper.
+        // This can happen if numeric drift removed them earlier.
+        // Fallback: try to find approximate matches by nearest neighbor.
+        auto find_nearest = [&](const Point &s)->int {
+            double bestd = std::numeric_limits<double>::max();
+            int besti = -1;
+            for (std::size_t i = 0; i < n; ++i) {
+                double d = CGAL::to_double(CGAL::squared_distance(pts[i], s));
+                if (d < bestd) { bestd = d; besti = static_cast<int>(i); }
+            }
+            // only accept if reasonably close
+            if (bestd <= (CLIP_EPS*CLIP_EPS * 100.0)) return besti;
+            return -1;
+        };
+        if (idx1 < 0) idx1 = find_nearest(src1);
+        if (idx2 < 0) idx2 = find_nearest(src2);
+    }
+
+    if (idx1 < 0 || idx2 < 0) {
+        // Give up and repair m_clipper by convex hull of (current pts + target).
+        std::vector<Point> fallback_pts = pts;
+        fallback_pts.push_back(target);
+        std::vector<Point> hull;
+        CGAL::convex_hull_2(fallback_pts.begin(), fallback_pts.end(), std::back_inserter(hull));
+        if (hull.size() >= 3) m_clipper = Polygon_2(hull.begin(), hull.end());
+        else m_clipper = Polygon_2();
+        return;
+    }
+
+    // rotate so idx1 < idx2 in linear order (handle wrap-around)
+    if (idx2 < idx1) {
+        std::rotate(pts.begin(), pts.begin() + idx1, pts.end());
+        // recompute indices after rotation
+        idx2 = (idx2 + static_cast<int>(n) - idx1);
+        idx1 = 0;
+    }
+
+    // Now idx1 < idx2 (in the rotated pts array). Replace pts[idx1] = target, erase pts[idx2].
+    pts[idx1] = target;
+    pts.erase(pts.begin() + idx2);
+
+    // Build a polygon and check validity (convex/simple). If it fails, fall back to hull.
+    Polygon_2 candidate(pts.begin(), pts.end());
+    if (candidate.is_simple() && candidate.is_convex() && candidate.size() >= 3) {
+        m_clipper = std::move(candidate);
+    } else {
+        // Repair: compute convex hull from pts
+        std::vector<Point> hull;
+        CGAL::convex_hull_2(pts.begin(), pts.end(), std::back_inserter(hull));
+        if (hull.size() >= 3) m_clipper = Polygon_2(hull.begin(), hull.end());
+        else m_clipper = Polygon_2();
+    }
+}
+
+void MedialAxis::updateVertices(std::vector<Point>& vertices,
+                                const CgalSegmentPair& earliest_meeting_pair,
+                                const CgalLinePair& meeting_edges)
+{
+    auto inter = getIntersectionPoint(meeting_edges.first, meeting_edges.second);
+    if (!inter) {
+        throw std::runtime_error("No valid edge intersection found; degenerate case.");
+    }
+    Point newVertex = *inter;
+
+    // Find the collapsing vertices
+    auto it1 = std::find(vertices.begin(), vertices.end(),
+                         earliest_meeting_pair.first.source());
+    auto it2 = std::find(vertices.begin(), vertices.end(),
+                         earliest_meeting_pair.second.source());
+
+    if (it1 == vertices.end() || it2 == vertices.end()) {
+        throw std::runtime_error("Could not find collapsing vertices in polygon.");
+    }
+
+    // Ensure order: it1 comes before it2
+    if (std::distance(vertices.begin(), it2) < std::distance(vertices.begin(), it1))
+        std::swap(it1, it2);
+
+    // Replace the first collapsed vertex with the intersection
+    *it1 = newVertex;
+
+    // Erase the second collapsed vertex
+    vertices.erase(it2);
+
+    // after you compute newVertex and update `vertices` (your existing code)
+    update_clipper_incremental(earliest_meeting_pair.first.source(),
+                           earliest_meeting_pair.second.source(),
+                           earliest_meeting_pair.first.target());
+}
+
+
+static Point compute_incenter(const Point& A, const Point& B, const Point& C)
+{
+    double a = std::sqrt(CGAL::squared_distance(B, C)); // length opposite A
+    double b = std::sqrt(CGAL::squared_distance(C, A)); // length opposite B
+    double c = std::sqrt(CGAL::squared_distance(A, B)); // length opposite C
+
+    double px = a * A.x() + b * B.x() + c * C.x();
+    double py = a * A.y() + b * B.y() + c * C.y();
+    double denom = a + b + c;
+
+    return Point(px / denom, py / denom);
 }
 
 void MedialAxis::triangleMedialAxis(const std::vector<Point>& vertices)
 {
     const Point A = vertices[0], B = vertices[1], C = vertices[2];
-    Point center = CGAL::centroid(A, B, C);
-    m_medialAxisCgalSegments.emplace_back(A, center);
-    m_medialAxisCgalSegments.emplace_back(B, center);
-    m_medialAxisCgalSegments.emplace_back(C, center);
+    Point center = compute_incenter(A, B, C); // use incenter instead of centroid
+
+    CGAL::write_polygon_WKT(std::cout, m_clipper);
+    auto a = clipCgalSegmentToPolygon({A, center}, m_clipper);
+    auto b = clipCgalSegmentToPolygon({B, center}, m_clipper);
+    auto c = clipCgalSegmentToPolygon({C, center}, m_clipper);
+    
+    if (a.has_value())
+        m_medialAxisSegments.push_back(a.value());
+    if (b.has_value())
+        m_medialAxisSegments.push_back(b.value());
+    if (c.has_value())
+        m_medialAxisSegments.push_back(c.value());
 }
 
 void MedialAxis::clipToPolygon(const Polygon_2& poly) {
     std::list<CgalSegment> clipped;
-    for (const auto& seg : m_medialAxisCgalSegments) {
+    for (const auto& seg : m_medialAxisSegments) {
         auto clippedSeg = clipCgalSegmentToPolygon(seg, poly);
-        if (clippedSeg) {
-            clipped.push_back(*clippedSeg);
+        if (clippedSeg.has_value()) {
+            clipped.push_back(clippedSeg.value());
         }
     }
-    m_medialAxisCgalSegments = clipped;
+    m_medialAxisSegments = clipped;
 }
 
 std::list<CgalSegment> MedialAxis::get() const
 {
-    return m_medialAxisCgalSegments;
+    return m_medialAxisSegments;
 }
