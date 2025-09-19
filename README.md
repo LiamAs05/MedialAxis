@@ -2,7 +2,7 @@
 An [ipelet](https://ipe.otfried.org/) that computes the medial axis of a selected polygon.
 
 <p align="center">
-  <img src=".rsrc/example.png?raw=true" alt="Medial Axis of a Simple Polygon" style="height:75%; width:75%;" >
+  <img src=".rsrc/example.png?raw=true" alt="Medial Axis of a Simple Polygon" style="height:40%; width:40%;" >
 </p>
 
 ## Compiling (Linux Instructions)
