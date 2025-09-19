@@ -1,7 +1,9 @@
 # Medial Axis Ipelet
 An [ipelet](https://ipe.otfried.org/) that computes the medial axis of a selected polygon.
 
-![Example](.rsrc/example.png?raw=true "Medial Axis of a Simple Polygon")
+<p align="center">
+  <img src=".rsrc/example.png?raw=true" alt="Medial Axis of a Simple Polygon"/>
+</p>
 
 ## Compiling (Linux Instructions)
 
