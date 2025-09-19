@@ -16,24 +16,7 @@ using Polygon_2 = CGAL::Polygon_2<K>;
 using CgalLinePair = std::pair<CgalLine, CgalLine>;
 using CgalSegmentPair = std::pair<CgalSegment, CgalSegment>;
 
-constexpr double CLIP_EPS = 1e-9;
-
-/// Compare two points with a small coordinate tolerance
-/// @param a, b points to compare
-/// @param eps tolerance
-/// @return true if equal
-bool pointsEqualEps(const Point& a, const Point& b, double eps = CLIP_EPS);
-
-/// Clips a segment to a given polygon
-/// @param seg segment to clip
-/// @param poly polygon to clip to
-/// @return Segment representing the newly-clipped segment, or `std::nullopt` if the polygon and the segment don't intersect.
-std::optional<CgalSegment> clipCgalSegmentToPolygon(const CgalSegment& seg, const Polygon_2& poly);
-
-/// Removes a point if it exists
-/// @param vertices container to lookup point in
-/// @param toRemove candidate to remove
-void removePointIfExists(std::vector<Point>& vertices, const Point& toRemove);
+constexpr double FP_TOLERANCE = 1e-9;
 
 /// Computes the intersection point of two CgalLines
 /// @param l1 first CgalLine
