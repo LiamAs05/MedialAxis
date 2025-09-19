@@ -89,17 +89,20 @@ void MedialAxis::addMedialAxisCgalSegments(const CgalSegmentPair& earliest_meeti
         m_medialAxisSegments.emplace_back(seg2.value());
 }
 
+// Replace your existing updateClipperPolygon with this:
+
 void MedialAxis::updateClipperPolygon(const Point& src1, const Point& src2, const Point& target)
 {
-    // Extract vertices of current clipping polygon
+    // copy current clipper vertices into a vector for manipulation
     std::vector<Point> pts(m_clipper.vertices_begin(), m_clipper.vertices_end());
     const std::size_t n = pts.size();
 
     if (n < TRIANGLE_VERTICES) {
+        std::cerr << "updateClipperPolygon: current clipper too small, skipping\n";
         return;
     }
 
-    // find indices of the two source vertices with tolerance
+    // Try exact/EPS matches first
     int idx1 = -1, idx2 = -1;
     for (std::size_t i = 0; i < n; ++i) {
         if (idx1 < 0 && pointsEqualEps(pts[i], src1)) idx1 = static_cast<int>(i);
@@ -107,60 +110,137 @@ void MedialAxis::updateClipperPolygon(const Point& src1, const Point& src2, cons
         if (idx1 >= 0 && idx2 >= 0) break;
     }
 
-    if (idx1 < 0 || idx2 < 0) {
-        // Couldn't find one or both sources in m_clipper.
-        // This can happen if numeric drift removed them earlier.
-        // Fallback: try to find approximate matches by nearest neighbor.
-        auto find_nearest = [&](const Point &s)->int {
-            double bestd = std::numeric_limits<double>::max();
-            int besti = -1;
-            for (std::size_t i = 0; i < n; ++i) {
-                double d = CGAL::to_double(CGAL::squared_distance(pts[i], s));
-                if (d < bestd) { bestd = d; besti = static_cast<int>(i); }
+    std::cout << "updateClipperPolygon: idx1=" << idx1 << " idx2=" << idx2 << std::endl;
+
+    // prepare scale for relative threshold if we need nearest-neighbor fallback
+    double maxcoord = 1.0;
+    for (const auto &p : pts) {
+        maxcoord = std::max(maxcoord, std::abs(CGAL::to_double(p.x())));
+        maxcoord = std::max(maxcoord, std::abs(CGAL::to_double(p.y())));
+    }
+    maxcoord = std::max(maxcoord, std::abs(CGAL::to_double(target.x())));
+    maxcoord = std::max(maxcoord, std::abs(CGAL::to_double(target.y())));
+    const double rel_threshold = CLIP_EPS * (maxcoord * maxcoord); // squared distance threshold
+
+    auto find_nearest_with_threshold = [&](const Point &s)->std::pair<int,double> {
+        double bestd = std::numeric_limits<double>::infinity();
+        int besti = -1;
+        for (std::size_t i = 0; i < n; ++i) {
+            double d = CGAL::to_double(CGAL::squared_distance(pts[i], s));
+            if (d < bestd) { bestd = d; besti = static_cast<int>(i); }
+        }
+        return {besti, bestd};
+    };
+
+    // If either index missing, try the nearest-match fallback
+    if (idx1 < 0) {
+        auto [besti, bestd] = find_nearest_with_threshold(src1);
+        if (besti >= 0) {
+            if (bestd <= rel_threshold) {
+                idx1 = besti;
+            } else {
+                // still accept nearest but log it — better than leaving clipper unchanged
+                std::cerr << "updateClipperPolygon: nearest distance " << bestd
+                          << " for src1 > threshold (" << rel_threshold << "); using nearest idx "
+                          << besti << " with warning\n";
+                idx1 = besti;
             }
-            // only accept if reasonably close
-            if (bestd <= (CLIP_EPS*CLIP_EPS * 100.0)) return besti;
-            return -1;
-        };
-        if (idx1 < 0) idx1 = find_nearest(src1);
-        if (idx2 < 0) idx2 = find_nearest(src2);
+        }
+    }
+    if (idx2 < 0) {
+        auto [besti, bestd] = find_nearest_with_threshold(src2);
+        if (besti >= 0) {
+            if (bestd <= rel_threshold) {
+                idx2 = besti;
+            } else {
+                std::cerr << "updateClipperPolygon: nearest distance " << bestd
+                          << " for src2 > threshold (" << rel_threshold << "); using nearest idx "
+                          << besti << " with warning\n";
+                idx2 = besti;
+            }
+        }
     }
 
+    // If still missing, produce a robust fallback: rebuild clipper as convex hull of (pts + target)
     if (idx1 < 0 || idx2 < 0) {
-        // Give up and repair m_clipper by convex hull of (current pts + target).
+        std::cerr << "updateClipperPolygon: could not match one of sources; rebuilding clipper via hull fallback\n";
         std::vector<Point> fallback_pts = pts;
         fallback_pts.push_back(target);
         std::vector<Point> hull;
         CGAL::convex_hull_2(fallback_pts.begin(), fallback_pts.end(), std::back_inserter(hull));
-        if (hull.size() >= 3) m_clipper = Polygon_2(hull.begin(), hull.end());
-        else m_clipper = Polygon_2();
+        if (hull.size() >= 3) {
+            m_clipper = Polygon_2(hull.begin(), hull.end());
+            if (m_clipper.orientation() == CGAL::CLOCKWISE) m_clipper.reverse_orientation();
+        } else {
+            m_clipper = Polygon_2();
+        }
+        std::cout << "New Clipper size: " << m_clipper.size() << std::endl;
         return;
     }
 
-    // rotate so idx1 < idx2 in linear order (handle wrap-around)
+    // Normalize to 0..n-1 and ensure indices are distinct
+    idx1 = (idx1 % static_cast<int>(n) + static_cast<int>(n)) % static_cast<int>(n);
+    idx2 = (idx2 % static_cast<int>(n) + static_cast<int>(n)) % static_cast<int>(n);
+    if (idx1 == idx2) {
+        // weird case: treat as fallback hull
+        std::cerr << "updateClipperPolygon: idx1 == idx2 after nearest fallback; using hull fallback\n";
+        std::vector<Point> fallback_pts = pts;
+        fallback_pts.push_back(target);
+        std::vector<Point> hull;
+        CGAL::convex_hull_2(fallback_pts.begin(), fallback_pts.end(), std::back_inserter(hull));
+        if (hull.size() >= 3) {
+            m_clipper = Polygon_2(hull.begin(), hull.end());
+            if (m_clipper.orientation() == CGAL::CLOCKWISE) m_clipper.reverse_orientation();
+        } else {
+            m_clipper = Polygon_2();
+        }
+        std::cout << "New Clipper size: " << m_clipper.size() << std::endl;
+        return;
+    }
+
+    // Rotate pts so idx1 < idx2 (linear order)
     if (idx2 < idx1) {
-        std::rotate(pts.begin(), pts.begin() + idx1, pts.end());
-        // recompute indices after rotation
-        idx2 = (idx2 + static_cast<int>(n) - idx1);
+        std::vector<Point> rotated;
+        rotated.reserve(n);
+        for (int k = idx1; k < static_cast<int>(n); ++k) rotated.push_back(pts[k]);
+        for (int k = 0; k < idx1; ++k) rotated.push_back(pts[k]);
+        pts.swap(rotated);
+        idx2 = (idx2 + static_cast<int>(n) - idx1) % static_cast<int>(n);
         idx1 = 0;
     }
 
-    // Now idx1 < idx2 (in the rotated pts array). Replace pts[idx1] = target, erase pts[idx2].
+    // Replace pts[idx1] with target and erase pts[idx2]
     pts[idx1] = target;
     pts.erase(pts.begin() + idx2);
 
-    // Build a polygon and check validity (convex/simple). If it fails, fall back to hull.
-    Polygon_2 candidate(pts.begin(), pts.end());
+    // Collapse nearly duplicate consecutive vertices (simple numerical cleanup)
+    std::vector<Point> unique_pts;
+    unique_pts.reserve(pts.size());
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+        if (i == 0 || !pointsEqualEps(pts[i], pts[i-1])) unique_pts.push_back(pts[i]);
+    }
+    if (unique_pts.size() > 1 && pointsEqualEps(unique_pts.front(), unique_pts.back()))
+        unique_pts.pop_back();
+
+    // Build candidate polygon and validate
+    Polygon_2 candidate(unique_pts.begin(), unique_pts.end());
+    if (candidate.orientation() == CGAL::CLOCKWISE) candidate.reverse_orientation();
+
     if (candidate.is_simple() && candidate.is_convex() && candidate.size() >= 3) {
         m_clipper = std::move(candidate);
     } else {
-        // Repair: compute convex hull from pts
+        // fallback: convex hull of candidate points
         std::vector<Point> hull;
-        CGAL::convex_hull_2(pts.begin(), pts.end(), std::back_inserter(hull));
-        if (hull.size() >= 3) m_clipper = Polygon_2(hull.begin(), hull.end());
-        else m_clipper = Polygon_2();
+        CGAL::convex_hull_2(unique_pts.begin(), unique_pts.end(), std::back_inserter(hull));
+        if (hull.size() >= 3) {
+            m_clipper = Polygon_2(hull.begin(), hull.end());
+            if (m_clipper.orientation() == CGAL::CLOCKWISE) m_clipper.reverse_orientation();
+        } else {
+            m_clipper = Polygon_2(); // empty
+        }
     }
 
+    std::cout << "New Clipper size: " << m_clipper.size() << std::endl;
     CGAL::write_polygon_WKT(std::cout, m_clipper);
 }
 
