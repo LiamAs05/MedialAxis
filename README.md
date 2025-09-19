@@ -2,12 +2,12 @@
 An [ipelet](https://ipe.otfried.org/) that computes the medial axis of a selected polygon.
 
 <p align="center">
-  <img src=".rsrc/example.png?raw=true" alt="Medial Axis of a Simple Polygon"/>
+  <img src=".rsrc/example.png?raw=true" alt="Medial Axis of a Simple Polygon" style="height:75%; width:75%;" >
 </p>
 
 ## Compiling (Linux Instructions)
 
-Make sure you have `ipe` installed with its [dependencies](https://github.com/otfried/ipe/blob/master/doc/install.txt).
+Make sure you have `ipe` installed with its [dependencies](https://github.com/otfried/ipe/blob/master/doc/install.txt#L20).
 
 Make sure you have `cmake` (`sudo apt install cmake`)
 
