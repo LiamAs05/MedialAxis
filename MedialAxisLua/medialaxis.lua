@@ -11,10 +11,7 @@ function run(model, num)
   if not ipelet then
     ipelet = assert(ipe.Ipelet(dllname))
   end
-  model:runIpelet(methods[num].label, ipelet, num)
+  model:runIpelet("Compute Medial Axis", ipelet, num)
 end
 
-methods = {
-  { label = "Compute Medial Axis" },
-}
 
