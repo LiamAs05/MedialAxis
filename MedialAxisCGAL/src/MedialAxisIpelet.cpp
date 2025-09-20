@@ -1,7 +1,3 @@
-// --------------------------------------------------------------------
-// Ipelet for computing the Medial Axis of a convex polygon
-// --------------------------------------------------------------------
-
 #include "ipelib.h"
 #include "MedialAxis.hpp"
 #include <vector>
@@ -118,13 +114,6 @@ bool MedialAxisIpelet::run(int function, IpeletData *data, IpeletHelper *helper)
         auto segments = m.get();
         auto segmentGroup = createSegmentGroup(segments, data);
         page->append(ESecondarySelected, data->iLayer, segmentGroup);
-        // for (const auto &s : segments)
-        // {
-        //     Vector a(s.source().x(), s.source().y());
-        //     Vector b(s.target().x(), s.target().y());
-        //     page->append(ESecondarySelected, data->iLayer, new Path(data->iAttributes, Shape(Segment(a, b))));
-        //     helper->messageBox("Added a segment", nullptr, 0);
-        // }
     }
     catch (const std::exception &e)
     {
