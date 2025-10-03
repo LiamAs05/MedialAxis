@@ -1,105 +1,23 @@
 #include "MedialAxis.hpp"
 
-static std::optional<CgalSegment> clipCgalSegmentToPolygon(const CgalSegment& seg, const Polygon_2& poly) {
-    // Collect intersection points with polygon edges
-    std::vector<Point> intersections;
+#include <CGAL/convex_hull_2.h>
+#include <vector>
+#include <iterator>
 
-    // Iterate over polygon edges
-    for (auto eit = poly.edges_begin(); eit != poly.edges_end(); ++eit) {
-        const CgalSegment& edge = *eit;
+constexpr std::size_t TRIANGLE_VERTICES = 3;
 
-        CGAL::Object result = CGAL::intersection(seg, edge);
-
-        if (const Point* ipoint = CGAL::object_cast<Point>(&result)) {
-            intersections.push_back(*ipoint);
-        }
-        else if (const CgalSegment* iseg = CGAL::object_cast<CgalSegment>(&result)) {
-            // The CgalSegment lies on the polygon edge: keep endpoints
-            intersections.push_back(iseg->source());
-            intersections.push_back(iseg->target());
-        }
-    }
-
-    // Also include the endpoints that are inside the polygon
-    if (poly.bounded_side(seg.source()) == CGAL::ON_BOUNDED_SIDE ||
-        poly.bounded_side(seg.source()) == CGAL::ON_BOUNDARY) {
-        intersections.push_back(seg.source());
-    }
-    if (poly.bounded_side(seg.target()) == CGAL::ON_BOUNDED_SIDE ||
-        poly.bounded_side(seg.target()) == CGAL::ON_BOUNDARY) {
-        intersections.push_back(seg.target());
-    }
-
-    // If we found less than 2 points, nothing to keep
-    if (intersections.size() < 2) {
-        return std::nullopt;
-    }
-
-    // Pick the two extreme points along the original CgalSegment
-    auto cmp = [&seg](const Point& a, const Point& b) {
-        return CGAL::squared_distance(seg.source(), a) < CGAL::squared_distance(seg.source(), b);
-        };
-    auto [pmin, pmax] = std::minmax_element(intersections.begin(), intersections.end(), cmp);
-
-    return CgalSegment(*pmin, *pmax);
-}
-
-static void removePointIfExists(std::vector<Point>& vertices, const Point& toRemove)
-{
-    auto it = std::find(vertices.begin(), vertices.end(), toRemove);
-    if (it != vertices.end())
-    {
-        vertices.erase(it);
-    }
-}
-
-/// Computes the intersection point of two CgalLines
-/// @param l1 first CgalLine
-/// @param l2 second CgalLine
-/// @return an intersection point, if such exists; otherwise `std::nullopt`
-static std::optional<Point> getIntersectionPoint(const CgalLine& l1, const CgalLine& l2) {
-    const CGAL::Object obj = intersection(l1, l2);
-    if (const Point* p = CGAL::object_cast<Point>(&obj)) {
-        return *p;
-    }
-    return std::nullopt;
-}
-
-/// Computes the angle bisector of edges (prev, curr) and (curr, next)
-/// @param prev first vertex
-/// @param curr middle vertex
-/// @param next end vertex
-/// @return a CgalLine object representing the angle bisector of the angle between said edges
-static CgalLine get_angle_bisector(const Point& prev, const Point& curr, const Point& next) {
-    // Construct vectors from current point to neighbors
-    K::Vector_2 u1 = prev - curr;
-    K::Vector_2 u2 = next - curr;
-
-    if (u1.squared_length() == 0 || u2.squared_length() == 0) {
-        throw std::runtime_error("Degenerate edge when computing angle bisector");
-    }
-
-    // Normalize
-    u1 = u1 / std::sqrt(u1.squared_length());
-    u2 = u2 / std::sqrt(u2.squared_length());
-
-    // Bisector direction
-    K::Vector_2 bisector = u1 + u2;
-    if (bisector.squared_length() == 0) {
-        bisector = u2;
-    }
-
-    return { curr, curr + bisector };
-}
-
-MedialAxis::MedialAxis(const Polygon_2& pgn)
+MedialAxis::MedialAxis(const Polygon_2& pgn) : m_originalPolygon(pgn)
 {
     if (!pgn.is_convex() || !pgn.is_simple()) {
         throw std::runtime_error("This algorithm only supports simple convex polygons.");
     }
 
+    for (const auto vertex : pgn.vertices())
+    {
+        m_polygonCorrespondents[vertex] = vertex;
+    }
+
     std::vector vertices(pgn.vertices_begin(), pgn.vertices_end());
-    constexpr std::size_t TRIANGLE_VERTICES = 3;
 
     if (vertices.size() < TRIANGLE_VERTICES)
     {
@@ -107,20 +25,18 @@ MedialAxis::MedialAxis(const Polygon_2& pgn)
     }
 
     while (vertices.size() > TRIANGLE_VERTICES) {
-        CgalLinePair meeting_edges;
-        Point center;
+        CgalLinePair polygonEdgesToCollapse;
+        Point bisectorIntersection;
 
-        auto next_meeting_bisectors = findNextCgalSegmentPair(vertices, meeting_edges, center);
-        addMedialAxisCgalSegments(next_meeting_bisectors);
-        updateVertices(vertices, next_meeting_bisectors, meeting_edges);
+        auto earliestIntersectingBisectors = findNextCgalSegmentPair(vertices, polygonEdgesToCollapse, bisectorIntersection);
+        updateVertices(vertices, earliestIntersectingBisectors, polygonEdgesToCollapse);
+        addMedialAxisCgalSegments(earliestIntersectingBisectors);
     }
 
-    // Final triangle case
     triangleMedialAxis(vertices);
-    clipToPolygon(pgn);
 }
 
-CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& vertices, CgalLinePair& meeting_edges, Point& center) const
+CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& vertices, CgalLinePair& polygonEdgesToCollapse, Point& bisectorIntersection) const
 {
     std::pair<CgalSegment, CgalSegment> earliest_meeting_pair;
     double min_radius = std::numeric_limits<double>::max();
@@ -132,69 +48,110 @@ CgalSegmentPair MedialAxis::findNextCgalSegmentPair(const std::vector<Point>& ve
         const std::uint64_t i2 = (i + 1) % n;
         const std::uint64_t i3 = (i + 2) % n;
 
-        CgalLine bisector1 = get_angle_bisector(vertices[i0], vertices[i1], vertices[i2]);
-        CgalLine bisector2 = get_angle_bisector(vertices[i1], vertices[i2], vertices[i3]);
+        CgalLine bisector1 = computeAngleBisector(vertices[i0], vertices[i1], vertices[i2]);
+        CgalLine bisector2 = computeAngleBisector(vertices[i1], vertices[i2], vertices[i3]);
 
-        auto inter = getIntersectionPoint(bisector1, bisector2);
-        if (!inter)
+        auto intersectionToTest = getIntersectionPoint(bisector1, bisector2);
+        if (!intersectionToTest.has_value())
         {
             continue;
         }
 
-        const double r = std::sqrt(CGAL::squared_distance(*inter, vertices[i1]));
+        CgalLine L1(vertices[i0], vertices[i1]);
+        CgalLine L2(vertices[i1], vertices[i2]);
+        CgalLine L3(vertices[i2], vertices[i3]);
+
+        const double d1 = std::sqrt(CGAL::to_double(CGAL::squared_distance(intersectionToTest.value(), L1)));
+        const double d2 = std::sqrt(CGAL::to_double(CGAL::squared_distance(intersectionToTest.value(), L2)));
+        const double d3 = std::sqrt(CGAL::to_double(CGAL::squared_distance(intersectionToTest.value(), L3)));
+
+        if (std::abs(d1 - d2) > FP_TOLERANCE || std::abs(d2 - d3) > FP_TOLERANCE || std::abs(d1 - d3) > FP_TOLERANCE)
+        {
+            throw std::logic_error("Computation error: Incorrect results in computing radius of circle");
+        }
+
+        // Radius of circle centered at intersection point and tangent to L1, L2, L3
+        const double r = (d1 + d2 + d3) / 3.0;
         if (r < min_radius) {
             min_radius = r;
-            meeting_edges = { CgalLine(vertices[i0], vertices[i1]), CgalLine(vertices[i2], vertices[i3]) };
-            center = *inter;
-            earliest_meeting_pair = { {vertices[i1], center}, {vertices[i2], center} };
+            polygonEdgesToCollapse = { L1, L3 };
+            bisectorIntersection = intersectionToTest.value();
+            earliest_meeting_pair = { {vertices[i1], bisectorIntersection}, {vertices[i2], bisectorIntersection} };
         }
     }
 
     return earliest_meeting_pair;
 }
 
-void MedialAxis::addMedialAxisCgalSegments(const CgalSegmentPair& earliest_meeting_pair)
+void MedialAxis::addMedialAxisCgalSegments(const CgalSegmentPair& earliestIntersectingBisectors)
 {
-    m_medialAxisCgalSegments.emplace_back(earliest_meeting_pair.first);
-    m_medialAxisCgalSegments.emplace_back(earliest_meeting_pair.second);
+    if (m_polygonCorrespondents.find(earliestIntersectingBisectors.first.source()) == m_polygonCorrespondents.end() ||
+        m_polygonCorrespondents.find(earliestIntersectingBisectors.second.source()) == m_polygonCorrespondents.end())
+    {
+        throw std::runtime_error("Could not find a clipping point for the bisectors source - this should not happen and indicates a computational bug.");
+    }
+
+    /* 
+    * We don't want to add the source vertex directly;
+    * Since the bisector might originate in a vertex outside of the original polygon;
+    * Instead we keep a map of points inside the polygon to replace the source and keep the edge inside.
+    */
+    CgalSegment seg1 = {m_polygonCorrespondents[earliestIntersectingBisectors.first.source()], earliestIntersectingBisectors.first.target()};
+    CgalSegment seg2 = {m_polygonCorrespondents[earliestIntersectingBisectors.second.source()], earliestIntersectingBisectors.second.target()};
+
+    m_medialAxisSegments.push_back(seg1);
+    m_medialAxisSegments.push_back(seg2);
 }
 
-void MedialAxis::updateVertices(std::vector<Point>& vertices, const CgalSegmentPair& earliest_meeting_pair, const CgalLinePair& meeting_edges) const
+void MedialAxis::updateVertices(std::vector<Point>& vertices,
+                                const CgalSegmentPair& earliestIntersectingBisectors,
+                                const CgalLinePair& polygonEdgesToCollapse)
 {
-    auto point = getIntersectionPoint(meeting_edges.first, meeting_edges.second);
-    if (point.has_value())
-    {
-        vertices.push_back(point.value());
+    auto intersectionOfNeighborEdges = getIntersectionPoint(polygonEdgesToCollapse.first, polygonEdgesToCollapse.second);
+    if (!intersectionOfNeighborEdges) {
+        throw std::runtime_error("No valid edge intersection found - this polygon contains a degenerate case.");
     }
-    else
-    {
-        throw std::runtime_error("No valid edge intersection found; The supplied polygon probably fits a degenerate case.");
+
+    Point newVertex = *intersectionOfNeighborEdges;
+
+    // Find the collapsing vertices
+    auto it1 = std::find(vertices.begin(), vertices.end(),
+                         earliestIntersectingBisectors.first.source());
+
+    auto it2 = std::find(vertices.begin(), vertices.end(),
+                         earliestIntersectingBisectors.second.source());
+
+    if (it1 == vertices.end() || it2 == vertices.end()) {
+        throw std::runtime_error("Could not find collapsing vertices in polygon.");
     }
-    removePointIfExists(vertices, earliest_meeting_pair.first.point(0));
-    removePointIfExists(vertices, earliest_meeting_pair.second.point(0));
+
+    // Ensure order: it1 comes before it2
+    if (std::distance(vertices.begin(), it2) < std::distance(vertices.begin(), it1))
+        std::swap(it1, it2);
+
+    // Replace the first collapsed vertex with the intersection
+    *it1 = newVertex;
+
+    // Erase the second collapsed vertex
+    vertices.erase(it2);
+
+    m_polygonCorrespondents[newVertex] = earliestIntersectingBisectors.first.target();
 }
+
 
 void MedialAxis::triangleMedialAxis(const std::vector<Point>& vertices)
 {
     const Point A = vertices[0], B = vertices[1], C = vertices[2];
-    Point center = CGAL::centroid(A, B, C);
-    m_medialAxisCgalSegments.emplace_back(A, center);
-    m_medialAxisCgalSegments.emplace_back(B, center);
-    m_medialAxisCgalSegments.emplace_back(C, center);
-}
+    Point center = computeTriangleIncenter(A, B, C);
 
-void MedialAxis::clipToPolygon(const Polygon_2& poly) {
-    std::list<CgalSegment> clipped;
-    for (const auto& seg : m_medialAxisCgalSegments) {
-        auto clippedSeg = clipCgalSegmentToPolygon(seg, poly);
-        if (clippedSeg) {
-            clipped.push_back(*clippedSeg);
-        }
+    for (const auto& point : vertices)
+    {
+        CgalSegment clipped = {m_polygonCorrespondents[point], center};
+        m_medialAxisSegments.push_back(clipped);
     }
-    m_medialAxisCgalSegments = clipped;
 }
 
 std::list<CgalSegment> MedialAxis::get() const
 {
-    return m_medialAxisCgalSegments;
+    return m_medialAxisSegments;
 }

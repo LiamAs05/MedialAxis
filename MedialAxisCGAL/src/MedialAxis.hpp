@@ -1,20 +1,6 @@
 #pragma once
 
-#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
-#include <CGAL/Polygon_2.h>
-#include <CGAL/intersections.h>
-#include <CGAL/IO/WKT.h>
-#include <list>
-#include <iostream>
-#include <algorithm>
-
-using K = CGAL::Exact_predicates_inexact_constructions_kernel;
-using Point = K::Point_2;
-using CgalLine = K::Line_2;
-using CgalSegment = K::Segment_2;
-using Polygon_2 = CGAL::Polygon_2<K>;
-using CgalLinePair = std::pair<CgalLine, CgalLine>;
-using CgalSegmentPair = std::pair<CgalSegment, CgalSegment>;
+#include "GeometryUtils.hpp"
 
 class MedialAxis
 {
@@ -25,18 +11,26 @@ public:
 private:
     /// Finds the pair of adjacent bisectors that meet first.
     /// @param vertices A convex polygon in CCW order
-    /// @param meeting_edges (out) The two polygon edges adjacent to the collapse
-    /// @param center (out) Intersection point of bisectors
-    /// @return Two medial-axis CgalSegments connecting center to the two collapsing vertices
-    CgalSegmentPair findNextCgalSegmentPair(const std::vector<Point>& vertices, CgalLinePair& meeting_edges, Point& center) const;
+    /// @param polygonEdgesToCollapse (out) The two polygon edges adjacent to the collapse
+    /// @param bisectorIntersection (out) Intersection point of bisectors
+    /// @return Two medial-axis CgalSegments connecting inter to the two collapsing vertices
+    CgalSegmentPair findNextCgalSegmentPair(const std::vector<Point>& vertices, CgalLinePair& polygonEdgesToCollapse, Point& bisectorIntersection) const;
 
-    void addMedialAxisCgalSegments(const CgalSegmentPair& earliest_meeting_pair);
+    /// Update the medial axis tree with two new segments
+    /// @param earliestIntersectingBisectors the pair of bisectors to intersect next
+    void addMedialAxisCgalSegments(const CgalSegmentPair& earliestIntersectingBisectors);
 
-    void updateVertices(std::vector<Point>& vertices, const CgalSegmentPair& earliest_meeting_pair, const CgalLinePair& meeting_edges) const;
+    /// Collapse the reduandent edge and update the polygons vertices
+    /// @param vertices The current n-gon, which will be changed to an (n-1)-gon
+    /// @param earliestIntersecting The pair of bisectors to intersect next
+    /// @param polygonEdgesToCollapse The neighbor edges to that which will be deleted, used to calculate the new vertex to add
+    void updateVertices(std::vector<Point>& vertices, const CgalSegmentPair& earliestIntersectingBisectors, const CgalLinePair& polygonEdgesToCollapse);
 
+    /// Compute the medial axis of a triangle - it's incenter
+    /// @param vertices the vertices of the triangle
     void triangleMedialAxis(const std::vector<Point>& vertices);
 
-    void clipToPolygon(const Polygon_2& poly);
-
-    std::list<CgalSegment> m_medialAxisCgalSegments;
+    std::list<CgalSegment> m_medialAxisSegments;
+    Polygon_2 m_originalPolygon;
+    std::unordered_map<Point, Point> m_polygonCorrespondents;
 };

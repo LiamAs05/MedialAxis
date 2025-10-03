@@ -1,59 +1,57 @@
-cmake_minimum_required(VERSION 3.15)
-project(MedialAxisIpelet LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.16)
+project(MedialAxis LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_BUILD_TYPE "Release")
 
-# -----------------------------
-# Find CGAL
-# -----------------------------
+# ---- Options ----
+option(BUILD_CLI "Build standalone CLI tester" ON)
+option(BUILD_IPELET "Build Ipelet plugin" ON)
+
+# ---- CGAL ----
 find_package(CGAL REQUIRED)
 
-# -----------------------------
-# Ipe configuration
-# -----------------------------
-# Adjust path to your Ipe build or install
-set(IPE_ROOT "/usr/local/")   # or wherever Ipe is installed
-set(IPE_INCLUDE_DIR "${IPE_ROOT}/include/ipe")
-set(IPE_LIB_DIR     "${IPE_ROOT}/lib/ipe/7.3.1/")
+# ---- Ipe (only for Ipelet) ----
+if(BUILD_IPELET)
+  if(NOT DEFINED IPE_PREFIX)
+    message(FATAL_ERROR "Please pass -DIPE_PREFIX=/path/to/ipe/install")
+  endif()
 
-include_directories(${IPE_INCLUDE_DIR})
-link_directories(${IPE_LIB_DIR})
+  set(IPE_INCLUDE_DIR "${IPE_PREFIX}/include")
+  set(IPE_LIB_DIR "${IPE_PREFIX}/lib")
 
-# -----------------------------
-# Build ipelet as shared module
-# -----------------------------
-add_library(medialaxis MODULE
-    MedialAxis.cpp
+  include_directories(${IPE_INCLUDE_DIR})
+  link_directories(${IPE_LIB_DIR})
+endif()
+
+# ---- Sources ----
+set(CORE_SRCS
+  MedialAxis.cpp
+  MedialAxis.hpp
+  GeometryUtils.cpp
+  GeometryUtils.hpp
+)
+
+# ---- CLI executable ----
+if(BUILD_CLI)
+  add_executable(medial_axis_cli
+    CliTester.cpp
+    ${CORE_SRCS}
+  )
+  target_link_libraries(medial_axis_cli PRIVATE CGAL::CGAL)
+endif()
+
+# ---- Ipelet plugin ----
+if(BUILD_IPELET)
+  add_library(medialaxis SHARED
     MedialAxisIpelet.cpp
-)
+    ${CORE_SRCS}
+  )
+  target_link_libraries(medialaxis PRIVATE CGAL::CGAL libipe.so)
 
-# CGAL
-target_link_libraries(medialaxis PRIVATE CGAL::CGAL)
-
-# Ipe (order matters!)
-target_link_libraries(medialaxis PRIVATE libipe.so)
-
-# -----------------------------
-# Output name and extension
-# -----------------------------
-# On Linux, Ipe expects `.so` or `.ipelet`
-set_target_properties(medialaxis PROPERTIES
-    PREFIX ""                                # no "lib" prefix
-)
-
-# -----------------------------
-# Install or copy
-# -----------------------------
-# Option 1: install into Ipe's ipelets directory
-install(TARGETS medialaxis
-    DESTINATION "${IPE_ROOT}/lib/ipe/ipelets"
-)
-
-# Option 2: or copy next to your binary dir for manual testing
-add_custom_command(TARGET medialaxis POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy
-        $<TARGET_FILE:medialaxis>
-        ${CMAKE_BINARY_DIR}/medialaxis.ipelet
-)
+  set_target_properties(medialaxis PROPERTIES
+    PREFIX "" # removes "lib" prefix, so it builds medialaxis_ipelet.so not libmedialaxis_ipelet.so
+  )
+endif()
 

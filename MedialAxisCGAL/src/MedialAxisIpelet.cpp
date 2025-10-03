@@ -1,7 +1,3 @@
-// --------------------------------------------------------------------
-// Ipelet for computing the Medial Axis of a convex polygon
-// --------------------------------------------------------------------
-
 #include "ipelib.h"
 #include "MedialAxis.hpp"
 #include <vector>
